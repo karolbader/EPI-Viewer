@@ -1,0 +1,7 @@
+/src-tauri/target
+/src-tauri/Cargo.lock
+/src-tauri/gen
+/_artifacts
+/_target/
+/_screens/
+/_screens_smoke/

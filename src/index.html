@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EPI Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>EPI Viewer</h1>
+        <p class="subhead">Local-only EPI pack inspector</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="open-pack-btn" type="button">Open pack.zip</button>
+      </div>
+    </header>
+
+    <section id="drop-zone" class="drop-zone">
+      Drop a <code>pack.zip</code> anywhere in the window to load it.
+    </section>
+
+    <section id="global-banner" class="banner hidden"></section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="claims">Claims</button>
+      <button class="tab" data-tab="drift">Drift</button>
+      <button class="tab" data-tab="decision">Decision Pack</button>
+      <button class="tab" data-tab="files">Files</button>
+    </nav>
+
+    <main class="panels">
+      <section id="panel-overview" class="panel active">
+        <div class="grid grid-2">
+          <article class="card">
+            <h2>Pack Summary</h2>
+            <dl class="meta">
+              <dt>Pack path</dt>
+              <dd id="overview-pack-path">-</dd>
+              <dt>Size</dt>
+              <dd id="overview-pack-size">-</dd>
+              <dt>SHA256</dt>
+              <dd id="overview-pack-sha" class="mono">-</dd>
+            </dl>
+          </article>
+
+          <article class="card">
+            <h2>Verification</h2>
+            <dl class="meta">
+              <dt>Status</dt>
+              <dd id="verify-status">-</dd>
+              <dt>Verifier</dt>
+              <dd id="verify-path" class="mono">-</dd>
+              <dt>Missing</dt>
+              <dd id="verify-missing">-</dd>
+              <dt>Schema Errors</dt>
+              <dd id="verify-schema-errors">-</dd>
+              <dt>Hash Mismatches</dt>
+              <dd id="verify-hash-mismatches">-</dd>
+              <dt>Extras</dt>
+              <dd id="verify-extras">-</dd>
+              <dt>Checked Entries</dt>
+              <dd id="verify-checked-count">-</dd>
+              <dt>Timestamp (UTC)</dt>
+              <dd id="verify-timestamp">-</dd>
+            </dl>
+            <pre id="verify-raw" class="json-box"></pre>
+          </article>
+        </div>
+
+        <article class="card">
+          <h2>Quick Counts</h2>
+          <dl class="meta inline">
+            <dt>Claims</dt>
+            <dd id="quick-claims-count">0</dd>
+            <dt>Drift changes</dt>
+            <dd id="quick-drift-count">0</dd>
+            <dt>Affected claims</dt>
+            <dd id="quick-affected-claims-count">0</dd>
+          </dl>
+        </article>
+      </section>
+
+      <section id="panel-claims" class="panel">
+        <div class="grid grid-2">
+          <article class="card">
+            <h2>Claims</h2>
+            <div class="table-wrap">
+              <table id="claims-table">
+                <thead>
+                  <tr>
+                    <th>claim_id</th>
+                    <th>title</th>
+                    <th>impact</th>
+                    <th>status</th>
+                    <th>primary evidence</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>Claim Details</h2>
+            <p id="claim-detail-empty">Select a claim to inspect evidence.</p>
+            <div id="claim-detail" class="hidden">
+              <h3 id="claim-detail-title"></h3>
+              <p id="claim-detail-meta" class="small"></p>
+              <h4>Evidence</h4>
+              <ul id="claim-evidence-list"></ul>
+              <h4>Notes</h4>
+              <pre id="claim-notes" class="json-box"></pre>
+              <h4>Assumptions</h4>
+              <pre id="claim-assumptions" class="json-box"></pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="panel-drift" class="panel">
+        <div class="grid grid-2">
+          <article class="card">
+            <h2>Drift Summary</h2>
+            <pre id="drift-summary" class="json-box"></pre>
+          </article>
+          <article class="card">
+            <h2>DRIFT.md</h2>
+            <p id="drift-md-empty">No DRIFT.md found in this pack.</p>
+            <div id="drift-md-render" class="markdown"></div>
+          </article>
+        </div>
+        <article class="card">
+          <h2>Changes</h2>
+          <div id="drift-changes"></div>
+        </article>
+      </section>
+
+      <section id="panel-decision" class="panel">
+        <article class="card fill-height">
+          <h2>DecisionPack.html</h2>
+          <p id="decision-empty">DecisionPack.html is not available in this pack.</p>
+          <iframe id="decision-frame" title="Decision Pack Viewer"></iframe>
+        </article>
+      </section>
+
+      <section id="panel-files" class="panel">
+        <div class="grid grid-2">
+          <article class="card">
+            <h2>Files</h2>
+            <div id="files-tree" class="files-tree"></div>
+          </article>
+          <article class="card">
+            <h2>Preview</h2>
+            <p id="preview-empty">Select a file to view its content.</p>
+            <div id="preview-wrap" class="hidden">
+              <p id="preview-meta" class="small mono"></p>
+              <div id="preview-html" class="markdown hidden"></div>
+              <pre id="preview-text" class="json-box"></pre>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
