@@ -1,4 +1,5 @@
 (function () {
+  const TAURI_FALLBACK_BANNER = "Tauri API unavailable — running in web fallback mode";
   const invoke =
     (window.__TAURI__ &&
       ((window.__TAURI__.core && window.__TAURI__.core.invoke) ||
@@ -400,7 +401,7 @@
 
   async function openPackDialog() {
     if (!invoke) {
-      setBanner("Tauri API unavailable. Start this app through Tauri.", true);
+      setBanner(TAURI_FALLBACK_BANNER, true);
       return;
     }
     try {
@@ -516,7 +517,7 @@
     setActiveTab("overview");
     renderAll();
     if (!invoke) {
-      setBanner("Tauri API unavailable. Start this app through Tauri.", true);
+      setBanner(TAURI_FALLBACK_BANNER, true);
       return;
     }
     await applyStartupOptions();

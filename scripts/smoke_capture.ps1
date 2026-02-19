@@ -49,9 +49,14 @@ $env:CARGO_TARGET_DIR = $targetDirAbsolute
 
 $stylesPath = Join-Path $repoRoot "src\styles.css"
 $stylesRaw = Get-Content -Raw -LiteralPath $stylesPath
-$themeHasNightCarbon = $stylesRaw -match "(?i)#0A0B10"
+$themeMarkerToken = "THEME_NIGHT_CARBON_0A0B10"
+$themeHasNightCarbon = $stylesRaw.Contains($themeMarkerToken)
 
-cargo build --release --manifest-path ".\src-tauri\Cargo.toml"
+$buildScriptPath = Join-Path $repoRoot "scripts\build_release.ps1"
+if (-not (Test-Path -LiteralPath $buildScriptPath -PathType Leaf)) {
+  throw "build_release.ps1 not found: $buildScriptPath"
+}
+& $buildScriptPath
 
 $viewerExePath = Join-Path $targetDirAbsolute "release\epi-viewer.exe"
 if (-not (Test-Path -LiteralPath $viewerExePath -PathType Leaf)) {
@@ -191,6 +196,41 @@ elseif (
 
 $packSha256 = (Get-FileHash -LiteralPath $packAbsolute -Algorithm SHA256).Hash.ToLowerInvariant()
 
+$verifyMissing = ""
+if ($null -ne $verifyJson.PSObject.Properties["missing"]) {
+  $verifyMissing = [string]$verifyJson.missing
+}
+elseif ($null -ne $verifyJson.PSObject.Properties["missing_files"] -and $null -ne $verifyJson.missing_files) {
+  if ($verifyJson.missing_files -is [System.Collections.ICollection]) {
+    $verifyMissing = [string]$verifyJson.missing_files.Count
+  }
+}
+
+$verifySchemaErrors = ""
+if ($null -ne $verifyJson.PSObject.Properties["schema_errors"]) {
+  $verifySchemaErrors = [string]$verifyJson.schema_errors
+}
+elseif ($null -ne $verifyJson.PSObject.Properties["schema_version_mismatches"] -and $null -ne $verifyJson.schema_version_mismatches) {
+  if ($verifyJson.schema_version_mismatches -is [System.Collections.ICollection]) {
+    $verifySchemaErrors = [string]$verifyJson.schema_version_mismatches.Count
+  }
+}
+
+$verifyHashMismatches = ""
+if ($null -ne $verifyJson.PSObject.Properties["hash_mismatches"]) {
+  $verifyHashMismatches = [string]$verifyJson.hash_mismatches
+}
+elseif ($null -ne $verifyJson.PSObject.Properties["hash_errors"] -and $null -ne $verifyJson.hash_errors) {
+  if ($verifyJson.hash_errors -is [System.Collections.ICollection]) {
+    $verifyHashMismatches = [string]$verifyJson.hash_errors.Count
+  }
+}
+
+$verifyExtras = ""
+if ($null -ne $verifyJson.PSObject.Properties["extras"]) {
+  $verifyExtras = [string]$verifyJson.extras
+}
+
 $missingScreenshots = @()
 foreach ($tab in $tabs) {
   if (-not $panelPaths.ContainsKey($tab)) {
@@ -200,7 +240,7 @@ foreach ($tab in $tabs) {
 
 $smokeFailures = @()
 if (-not $themeHasNightCarbon) {
-  $smokeFailures += "src/styles.css does not contain #0A0B10"
+  $smokeFailures += "src/styles.css does not contain THEME_NIGHT_CARBON_0A0B10"
 }
 if ($missingScreenshots.Count -gt 0) {
   $smokeFailures += "Missing screenshots for tabs: $($missingScreenshots -join ',')"
@@ -239,16 +279,21 @@ elseif ($null -ne $verifyJson.PSObject.Properties["file_hashes"] -and $null -ne 
 $smokeLogPath = Join-Path $outDirAbsolute "SMOKE.txt"
 $lines = @(
   "PACK_PATH=$packAbsolute",
+  "PACK_SHA256=$packSha256",
   "EPI_CLI_PATH=$epiCliAbsolute",
-  "VIEWER_EXE_PATH=$viewerExePath",
+  "EXE_PATH=$viewerExePath",
   "OUTDIR=$outDirAbsolute",
   "CARGO_TARGET_DIR=$targetDirAbsolute",
-  "PACK_SHA256=$packSha256",
+  "THEME_MARKER=$themeMarkerToken",
   "THEME_BASE_HEX=#0A0B10",
   "THEME_CSS_HAS_NIGHT_CARBON=$themeOkText",
   "VERIFY_JSON_PATH=$verifyOutputPath",
   "VERIFY_OK=$verifyOkText",
   "VERIFY_STATUS=$verifyStatus",
+  "VERIFY_MISSING=$verifyMissing",
+  "VERIFY_SCHEMA_ERRORS=$verifySchemaErrors",
+  "VERIFY_HASH_MISMATCHES=$verifyHashMismatches",
+  "VERIFY_EXTRAS=$verifyExtras",
   "VERIFY_CHECKED_ENTRIES=$checkedEntries",
   "PANEL_OVERVIEW=$($panelPaths['overview'])",
   "PANEL_CLAIMS=$($panelPaths['claims'])",

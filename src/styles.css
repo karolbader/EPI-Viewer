@@ -1,5 +1,6 @@
+/* THEME_NIGHT_CARBON_0A0B10 */
 :root {
-  --bg: #0a0b10;
+  --bg: #0A0B10;
   --bg-alt: #11141d;
   --panel: #12161f;
   --panel-soft: #0f131b;
@@ -19,6 +20,7 @@
 body {
   margin: 0;
   color: var(--ink);
+  background-color: #0A0B10;
   background: radial-gradient(circle at 12% -8%, #1a202d 0%, var(--bg) 46%, #090a0f 100%);
   font-family: "Segoe UI", "Segoe UI Variable Text", Tahoma, sans-serif;
   min-height: 100vh;
