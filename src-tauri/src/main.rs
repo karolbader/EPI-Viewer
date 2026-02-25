@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::Command,
     sync::Mutex,
@@ -18,7 +18,7 @@ use std::{
 use tauri::{Manager, State};
 use tempfile::TempDir;
 use walkdir::WalkDir;
-use zip::ZipArchive;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const REQUIRED_FILES: [&str; 5] = [
     "epi.seal.v1.json",
@@ -38,6 +38,8 @@ struct AppState {
 struct LoadedSession {
     _temp_dir: TempDir,
     extract_root: PathBuf,
+    extract_root_canonical: PathBuf,
+    pack_path: PathBuf,
     known_paths: BTreeSet<String>,
 }
 
@@ -142,6 +144,7 @@ struct AffectedClaimView {
 struct DecisionPackView {
     rel_path: Option<String>,
     html: Option<String>,
+    pdf_rel_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -154,11 +157,20 @@ struct FilePreviewResponse {
     truncated: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfPrintResponse {
+    printed: bool,
+    fallback_opened: bool,
+    message: String,
+}
+
 #[derive(Serialize, Default, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct StartupOptions {
     autostart_pack: Option<String>,
     autostart_tab: Option<String>,
+    demo_mode: bool,
 }
 
 fn parse_startup_options_from_args<I, S>(args: I) -> StartupOptions
@@ -180,10 +192,19 @@ where
                     parsed.autostart_tab = Some(value.as_ref().to_ascii_lowercase());
                 }
             }
+            "--demo" => {
+                parsed.demo_mode = true;
+            }
             _ => {}
         }
     }
     parsed
+}
+
+fn env_flag_is_true(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true"))
 }
 
 #[tauri::command]
@@ -198,6 +219,7 @@ fn get_startup_options() -> StartupOptions {
                 .ok()
                 .map(|value| value.to_ascii_lowercase())
         }),
+        demo_mode: parsed.demo_mode || env_flag_is_true("VITE_DEMO"),
     }
 }
 
@@ -228,26 +250,210 @@ fn read_file_preview(
     let session = guard
         .as_ref()
         .ok_or_else(|| "No pack loaded yet".to_string())?;
+    let (resolved_rel, canonical_path) =
+        resolve_session_file_path(session, &rel_path).map_err(format_error)?;
+    build_preview(&resolved_rel, &canonical_path).map_err(format_error)
+}
 
-    if !session.known_paths.contains(&rel_path) {
-        return Err(format!("File is not part of current pack: {rel_path}"));
-    }
+#[tauri::command]
+fn open_pack_file(rel_path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.session.lock().map_err(|_| "state lock poisoned")?;
+    let session = guard
+        .as_ref()
+        .ok_or_else(|| "No pack loaded yet".to_string())?;
+    let (_, canonical_path) =
+        resolve_session_file_path(session, &rel_path).map_err(format_error)?;
+    open_path_with_system(&canonical_path).map_err(format_error)
+}
 
-    let full_path = session.extract_root.join(Path::new(&rel_path));
-    let canonical = full_path
-        .canonicalize()
-        .with_context(|| format!("failed to resolve file: {}", full_path.display()))
+#[tauri::command]
+fn export_pack_file(
+    rel_path: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let guard = state.session.lock().map_err(|_| "state lock poisoned")?;
+    let session = guard
+        .as_ref()
+        .ok_or_else(|| "No pack loaded yet".to_string())?;
+    let (resolved_rel, canonical_path) =
+        resolve_session_file_path(session, &rel_path).map_err(format_error)?;
+    let default_name = Path::new(&resolved_rel)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("export.bin");
+    let save_path = FileDialog::new()
+        .set_title("Export file")
+        .set_file_name(default_name)
+        .save_file();
+    let Some(save_path) = save_path else {
+        return Ok(None);
+    };
+    fs::copy(&canonical_path, &save_path)
+        .with_context(|| {
+            format!(
+                "failed to export {} to {}",
+                canonical_path.display(),
+                save_path.display()
+            )
+        })
         .map_err(format_error)?;
-    if !canonical.starts_with(&session.extract_root) {
-        return Err("Refusing to read path outside extracted pack".to_string());
+    Ok(Some(path_to_string(&save_path)))
+}
+
+#[tauri::command]
+fn print_pack_pdf(
+    rel_path: String,
+    state: State<'_, AppState>,
+) -> Result<PdfPrintResponse, String> {
+    let guard = state.session.lock().map_err(|_| "state lock poisoned")?;
+    let session = guard
+        .as_ref()
+        .ok_or_else(|| "No pack loaded yet".to_string())?;
+    let (resolved_rel, canonical_path) =
+        resolve_session_file_path(session, &rel_path).map_err(format_error)?;
+    let is_pdf = Path::new(&resolved_rel)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
+    if !is_pdf {
+        return Err(format!(
+            "Print is only supported for PDF files: {resolved_rel}"
+        ));
     }
 
-    build_preview(&rel_path, &canonical).map_err(format_error)
+    match print_path_with_system(&canonical_path) {
+        Ok(()) => Ok(PdfPrintResponse {
+            printed: true,
+            fallback_opened: false,
+            message: "Print command sent to system PDF handler.".to_string(),
+        }),
+        Err(print_err) => {
+            open_path_with_system(&canonical_path).map_err(format_error)?;
+            Ok(PdfPrintResponse {
+                printed: false,
+                fallback_opened: true,
+                message: format!(
+                    "Print command failed ({print_err}). Opened PDF instead. Use Ctrl+P to print."
+                ),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+fn export_support_pack(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let snapshot = {
+        let guard = state.session.lock().map_err(|_| "state lock poisoned")?;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| "No pack loaded yet".to_string())?;
+        SessionSnapshot {
+            extract_root: session.extract_root.clone(),
+            extract_root_canonical: session.extract_root_canonical.clone(),
+            pack_path: session.pack_path.clone(),
+            known_paths: session.known_paths.clone(),
+        }
+    };
+
+    let default_name = format!(
+        "Civitas-EPI-Viewer-SupportPack-{}.zip",
+        Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    let save_path = FileDialog::new()
+        .set_title("Export Support Pack")
+        .add_filter("Support Pack", &["zip"])
+        .set_file_name(&default_name)
+        .save_file();
+    let Some(save_path) = save_path else {
+        return Ok(None);
+    };
+
+    write_support_pack_zip(&snapshot, &save_path).map_err(format_error)?;
+    Ok(Some(path_to_string(&save_path)))
 }
 
 struct LoadedPack {
     response: PackLoadResponse,
     session: LoadedSession,
+}
+
+#[derive(Clone)]
+struct SessionSnapshot {
+    extract_root: PathBuf,
+    extract_root_canonical: PathBuf,
+    pack_path: PathBuf,
+    known_paths: BTreeSet<String>,
+}
+
+fn normalize_and_validate_rel_path(rel_path: &str) -> Result<String> {
+    let sanitized = rel_path.trim().replace('\\', "/");
+    if sanitized.is_empty() {
+        bail!("Relative path is empty");
+    }
+
+    let path = Path::new(&sanitized);
+    if path.is_absolute() {
+        bail!("Absolute paths are not allowed: {rel_path}");
+    }
+
+    for component in path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => bail!("Parent traversal is not allowed: {rel_path}"),
+            Component::Prefix(_) | Component::RootDir => {
+                bail!("Absolute paths are not allowed: {rel_path}")
+            }
+        }
+    }
+
+    let normalized = normalize_rel_path(path);
+    if normalized.is_empty() {
+        bail!("Relative path is empty");
+    }
+    Ok(normalized)
+}
+
+fn resolve_known_rel_path(known_paths: &BTreeSet<String>, rel_path: &str) -> Result<String> {
+    let normalized = normalize_and_validate_rel_path(rel_path)?;
+    if known_paths.contains(&normalized) {
+        return Ok(normalized);
+    }
+
+    if cfg!(target_os = "windows") {
+        if let Some(existing) = known_paths
+            .iter()
+            .find(|existing| existing.eq_ignore_ascii_case(&normalized))
+        {
+            return Ok(existing.clone());
+        }
+    }
+
+    bail!("File is not part of current pack: {normalized}");
+}
+
+fn resolve_file_under_extract_root(
+    extract_root: &Path,
+    extract_root_canonical: &Path,
+    rel_path: &str,
+) -> Result<PathBuf> {
+    let full_path = extract_root.join(Path::new(rel_path));
+    let canonical = full_path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve file: {}", full_path.display()))?;
+    if !canonical.starts_with(extract_root_canonical) {
+        bail!("Refusing to read path outside extracted pack");
+    }
+    Ok(canonical)
+}
+
+fn resolve_session_file_path(session: &LoadedSession, rel_path: &str) -> Result<(String, PathBuf)> {
+    let resolved_rel = resolve_known_rel_path(&session.known_paths, rel_path)?;
+    let canonical = resolve_file_under_extract_root(
+        &session.extract_root,
+        &session.extract_root_canonical,
+        &resolved_rel,
+    )?;
+    Ok((resolved_rel, canonical))
 }
 
 fn load_pack_impl(pack_path: &Path) -> Result<LoadedPack> {
@@ -284,6 +490,12 @@ fn load_pack_impl(pack_path: &Path) -> Result<LoadedPack> {
 
     let mut parse_warnings = extract_zip_to_dir(&canonical_pack, &extract_root)?;
     let files = collect_extracted_files(&extract_root)?;
+    let extract_root_canonical = extract_root.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve extraction dir: {}",
+            extract_root.display()
+        )
+    })?;
     let known_paths: BTreeSet<String> = files.iter().map(|entry| entry.rel_path.clone()).collect();
 
     let missing_files = REQUIRED_FILES
@@ -353,6 +565,8 @@ fn load_pack_impl(pack_path: &Path) -> Result<LoadedPack> {
         session: LoadedSession {
             _temp_dir: temp_dir,
             extract_root,
+            extract_root_canonical,
+            pack_path: canonical_pack,
             known_paths,
         },
     })
@@ -626,24 +840,23 @@ fn extract_affected_claims(change: &Value) -> Vec<AffectedClaimView> {
 }
 
 fn build_decision_pack_view(root: &Path, files: &[PackFileEntry]) -> DecisionPackView {
-    let Some(rel_path) = files
+    let html_rel_path = files
         .iter()
         .find(|entry| file_name_matches(&entry.rel_path, "DecisionPack.html"))
-        .map(|entry| entry.rel_path.clone())
-    else {
-        return DecisionPackView::default();
-    };
+        .map(|entry| entry.rel_path.clone());
+    let pdf_rel_path = files
+        .iter()
+        .find(|entry| file_name_matches(&entry.rel_path, "DecisionPack.pdf"))
+        .map(|entry| entry.rel_path.clone());
 
-    let full_path = root.join(Path::new(&rel_path));
-    match fs::read_to_string(&full_path) {
-        Ok(html) => DecisionPackView {
-            rel_path: Some(rel_path),
-            html: Some(html),
-        },
-        Err(_) => DecisionPackView {
-            rel_path: Some(rel_path),
-            html: None,
-        },
+    let html = html_rel_path
+        .as_ref()
+        .and_then(|rel_path| fs::read_to_string(root.join(Path::new(rel_path))).ok());
+
+    DecisionPackView {
+        rel_path: html_rel_path,
+        html,
+        pdf_rel_path,
     }
 }
 
@@ -822,6 +1035,216 @@ fn epi_cli_file_name() -> &'static str {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn open_path_with_system(path: &Path) -> Result<()> {
+    if !path.is_file() {
+        bail!("file not found: {}", path.display());
+    }
+    windows_start_process(path, None)
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_with_system(path: &Path) -> Result<()> {
+    if !path.is_file() {
+        bail!("file not found: {}", path.display());
+    }
+    let status = Command::new("open")
+        .arg(path)
+        .status()
+        .with_context(|| format!("failed to launch file with open: {}", path.display()))?;
+    if !status.success() {
+        bail!("open exited with {:?}", status.code());
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_path_with_system(path: &Path) -> Result<()> {
+    if !path.is_file() {
+        bail!("file not found: {}", path.display());
+    }
+    let status = Command::new("xdg-open")
+        .arg(path)
+        .status()
+        .with_context(|| format!("failed to launch file with xdg-open: {}", path.display()))?;
+    if !status.success() {
+        bail!("xdg-open exited with {:?}", status.code());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+fn open_path_with_system(path: &Path) -> Result<()> {
+    let _ = path;
+    bail!("Open action is not supported on this platform")
+}
+
+#[cfg(target_os = "windows")]
+fn print_path_with_system(path: &Path) -> Result<()> {
+    windows_start_process(path, Some("Print"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn print_path_with_system(path: &Path) -> Result<()> {
+    let _ = path;
+    bail!("Print action is not supported on this platform")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_start_process(path: &Path, verb: Option<&str>) -> Result<()> {
+    let mut command = Command::new("powershell");
+    command.arg("-NoProfile");
+    if let Some(verb) = verb {
+        command
+            .arg("-Command")
+            .arg("Start-Process -FilePath $args[0] -Verb $args[1]")
+            .arg("--")
+            .arg(path)
+            .arg(verb);
+    } else {
+        command
+            .arg("-Command")
+            .arg("Start-Process -FilePath $args[0]")
+            .arg("--")
+            .arg(path);
+    }
+
+    let status = command
+        .status()
+        .with_context(|| format!("failed to start process for {}", path.display()))?;
+    if !status.success() {
+        bail!("system process exited with {:?}", status.code());
+    }
+    Ok(())
+}
+
+fn write_support_pack_zip(snapshot: &SessionSnapshot, out_zip_path: &Path) -> Result<()> {
+    if let Some(parent) = out_zip_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create support pack output dir: {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let out_file = fs::File::create(out_zip_path)
+        .with_context(|| format!("failed to create zip file: {}", out_zip_path.display()))?;
+    let mut zip = ZipWriter::new(out_file);
+
+    if snapshot.pack_path.is_file() {
+        add_file_to_zip(&mut zip, &snapshot.pack_path, "input/pack.zip")?;
+    } else {
+        for rel_path in &snapshot.known_paths {
+            add_session_path_to_zip(
+                &mut zip,
+                snapshot,
+                rel_path,
+                &format!("input/extracted/{rel_path}"),
+            )?;
+        }
+    }
+
+    if let Some(rel_path) = find_first_rel_path_by_file_name(&snapshot.known_paths, "verify.json") {
+        add_session_path_to_zip(&mut zip, snapshot, &rel_path, "artifacts/verify.json")?;
+    }
+    if let Some(rel_path) =
+        find_first_rel_path_by_file_name(&snapshot.known_paths, "DecisionPack.html")
+    {
+        add_session_path_to_zip(&mut zip, snapshot, &rel_path, "artifacts/DecisionPack.html")?;
+    }
+    if let Some(rel_path) =
+        find_first_rel_path_by_file_name(&snapshot.known_paths, "DecisionPack.pdf")
+    {
+        add_session_path_to_zip(&mut zip, snapshot, &rel_path, "artifacts/DecisionPack.pdf")?;
+    }
+
+    if let Some(log_path) = find_optional_viewer_log() {
+        add_file_to_zip(&mut zip, &log_path, "diagnostics/viewer.log")?;
+    }
+
+    let env_text = format!(
+        "app_name=epi-viewer\napp_version={}\nos={}\narch={}\ntimestamp_utc={}\npack_path={}\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        now_rfc3339_utc(),
+        path_to_string(&snapshot.pack_path)
+    );
+    add_text_to_zip(&mut zip, "env.txt", &env_text)?;
+
+    zip.finish()
+        .context("failed to finalize support pack zip")?;
+    Ok(())
+}
+
+fn add_session_path_to_zip(
+    zip: &mut ZipWriter<fs::File>,
+    snapshot: &SessionSnapshot,
+    rel_path: &str,
+    zip_rel_path: &str,
+) -> Result<()> {
+    let canonical = resolve_file_under_extract_root(
+        &snapshot.extract_root,
+        &snapshot.extract_root_canonical,
+        rel_path,
+    )?;
+    add_file_to_zip(zip, &canonical, zip_rel_path)
+}
+
+fn add_file_to_zip(
+    zip: &mut ZipWriter<fs::File>,
+    source_path: &Path,
+    zip_rel_path: &str,
+) -> Result<()> {
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    zip.start_file(zip_rel_path.replace('\\', "/"), options)
+        .with_context(|| format!("failed to create zip entry {zip_rel_path}"))?;
+    let mut input = fs::File::open(source_path)
+        .with_context(|| format!("failed to open source file {}", source_path.display()))?;
+    std::io::copy(&mut input, zip)
+        .with_context(|| format!("failed to copy source file {}", source_path.display()))?;
+    Ok(())
+}
+
+fn add_text_to_zip(zip: &mut ZipWriter<fs::File>, zip_rel_path: &str, text: &str) -> Result<()> {
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    zip.start_file(zip_rel_path.replace('\\', "/"), options)
+        .with_context(|| format!("failed to create zip entry {zip_rel_path}"))?;
+    zip.write_all(text.as_bytes())
+        .with_context(|| format!("failed to write zip entry {zip_rel_path}"))?;
+    Ok(())
+}
+
+fn find_first_rel_path_by_file_name(
+    known_paths: &BTreeSet<String>,
+    file_name: &str,
+) -> Option<String> {
+    known_paths
+        .iter()
+        .find(|rel_path| file_name_matches(rel_path, file_name))
+        .cloned()
+}
+
+fn find_optional_viewer_log() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("viewer.log"));
+            candidates.push(exe_dir.join("logs").join("viewer.log"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("viewer.log"));
+    }
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
 fn build_preview(rel_path: &str, full_path: &Path) -> Result<FilePreviewResponse> {
     let bytes = fs::read(full_path)
         .with_context(|| format!("failed to read file: {}", full_path.display()))?;
@@ -875,22 +1298,33 @@ fn build_preview(rel_path: &str, full_path: &Path) -> Result<FilePreviewResponse
         });
     }
 
-    match String::from_utf8(slice.to_vec()) {
-        Ok(text) => Ok(FilePreviewResponse {
+    if extension == "txt" || extension == "log" {
+        return Ok(FilePreviewResponse {
             rel_path: rel_path.to_string(),
             kind: "text".to_string(),
-            text,
+            text: String::from_utf8_lossy(slice).to_string(),
             html: None,
             truncated,
-        }),
-        Err(_) => Ok(FilePreviewResponse {
-            rel_path: rel_path.to_string(),
-            kind: "binary".to_string(),
-            text: "Binary preview is not available for this file type.".to_string(),
-            html: None,
-            truncated,
-        }),
+        });
     }
+
+    if extension == "pdf" {
+        return Ok(FilePreviewResponse {
+            rel_path: rel_path.to_string(),
+            kind: "pdf".to_string(),
+            text: String::new(),
+            html: None,
+            truncated,
+        });
+    }
+
+    Ok(FilePreviewResponse {
+        rel_path: rel_path.to_string(),
+        kind: "unsupported".to_string(),
+        text: String::new(),
+        html: None,
+        truncated,
+    })
 }
 
 fn markdown_to_html(markdown: &str) -> String {
@@ -1022,7 +1456,11 @@ fn main() {
             get_startup_options,
             pick_pack_zip,
             load_pack,
-            read_file_preview
+            read_file_preview,
+            open_pack_file,
+            export_pack_file,
+            print_pack_pdf,
+            export_support_pack
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri app")
@@ -1039,6 +1477,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::io::Write;
     use std::sync::Mutex;
     use zip::write::SimpleFileOptions;
@@ -1126,12 +1565,131 @@ mod tests {
             r"E:\_packs\demo\pack.zip",
             "--tab",
             "Claims",
+            "--demo",
         ]);
         assert_eq!(
             parsed.autostart_pack.as_deref(),
             Some(r"E:\_packs\demo\pack.zip")
         );
         assert_eq!(parsed.autostart_tab.as_deref(), Some("claims"));
+        assert!(parsed.demo_mode);
+    }
+
+    #[test]
+    fn resolve_session_file_path_keeps_access_inside_extract_root() -> Result<()> {
+        let temp_dir = tempfile::Builder::new()
+            .prefix("epi-viewer-session-")
+            .tempdir()?;
+        let extract_root = temp_dir.path().join("pack");
+        let file_rel = "docs/Quote.json";
+        let file_path = extract_root.join(Path::new(file_rel));
+        fs::create_dir_all(file_path.parent().unwrap())?;
+        fs::write(&file_path, br#"{"ok":true}"#)?;
+        let extract_root_canonical = extract_root.canonicalize()?;
+
+        let mut known_paths = BTreeSet::new();
+        known_paths.insert(file_rel.to_string());
+        let session = LoadedSession {
+            _temp_dir: temp_dir,
+            extract_root: extract_root.clone(),
+            extract_root_canonical: extract_root_canonical.clone(),
+            pack_path: extract_root.join("pack.zip"),
+            known_paths,
+        };
+
+        let (resolved_rel, canonical_file) =
+            resolve_session_file_path(&session, r"docs\Quote.json")?;
+        assert_eq!(resolved_rel, file_rel);
+        assert!(canonical_file.starts_with(&extract_root_canonical));
+
+        let traversal_err = resolve_session_file_path(&session, "../outside.txt").unwrap_err();
+        assert!(
+            traversal_err.to_string().contains("Parent traversal"),
+            "unexpected error: {traversal_err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn support_pack_zip_contains_expected_entries() -> Result<()> {
+        let temp_dir = tempfile::Builder::new()
+            .prefix("epi-viewer-support-")
+            .tempdir()?;
+        let extract_root = temp_dir.path().join("pack");
+        fs::create_dir_all(&extract_root)?;
+        fs::write(extract_root.join("verify.json"), b"{\"ok\":true}")?;
+        fs::write(extract_root.join("DecisionPack.html"), b"<html></html>")?;
+        fs::write(extract_root.join("DecisionPack.pdf"), b"%PDF-1.7")?;
+
+        let pack_zip = temp_dir.path().join("pack.zip");
+        fs::write(&pack_zip, b"zip-bytes")?;
+
+        let mut known_paths = BTreeSet::new();
+        known_paths.insert("verify.json".to_string());
+        known_paths.insert("DecisionPack.html".to_string());
+        known_paths.insert("DecisionPack.pdf".to_string());
+
+        let snapshot = SessionSnapshot {
+            extract_root: extract_root.clone(),
+            extract_root_canonical: extract_root.canonicalize()?,
+            pack_path: pack_zip,
+            known_paths,
+        };
+        let out_zip = temp_dir.path().join("support.zip");
+        write_support_pack_zip(&snapshot, &out_zip)?;
+
+        let entries = list_zip_entries_sorted(&out_zip)?;
+        assert!(entries.contains(&"input/pack.zip".to_string()));
+        assert!(entries.contains(&"artifacts/verify.json".to_string()));
+        assert!(entries.contains(&"artifacts/DecisionPack.html".to_string()));
+        assert!(entries.contains(&"artifacts/DecisionPack.pdf".to_string()));
+        assert!(entries.contains(&"env.txt".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn iso_pack_text_previews_load_when_pack_is_available() -> Result<()> {
+        let pack_path = PathBuf::from(r"E:\_packs\DEMO_iso27001-lite-v1_PACK-001\pack.zip");
+        if !pack_path.is_file() {
+            return Ok(());
+        }
+
+        let loaded = load_pack_impl(&pack_path)?;
+        let session = loaded.session;
+
+        let quote_rel = session
+            .known_paths
+            .iter()
+            .find(|rel| file_name_matches(rel, "Quote.json"))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Quote.json not found in demo pack"))?;
+        let manifest_rel = session
+            .known_paths
+            .iter()
+            .find(|rel| file_name_matches(rel, "DecisionPack.manifest.json"))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("DecisionPack.manifest.json not found in demo pack"))?;
+        let replay_rel = session
+            .known_paths
+            .iter()
+            .find(|rel| file_name_matches(rel, "REPLAY.md"))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("REPLAY.md not found in demo pack"))?;
+
+        let (_, quote_path) = resolve_session_file_path(&session, &quote_rel.replace('/', "\\"))?;
+        let quote_preview = build_preview(&quote_rel, &quote_path)?;
+        assert_eq!(quote_preview.kind, "json");
+
+        let (_, manifest_path) =
+            resolve_session_file_path(&session, &manifest_rel.replace('/', "\\"))?;
+        let manifest_preview = build_preview(&manifest_rel, &manifest_path)?;
+        assert_eq!(manifest_preview.kind, "json");
+
+        let (_, replay_path) = resolve_session_file_path(&session, &replay_rel.replace('/', "\\"))?;
+        let replay_preview = build_preview(&replay_rel, &replay_path)?;
+        assert_eq!(replay_preview.kind, "markdown");
+
+        Ok(())
     }
 
     #[test]

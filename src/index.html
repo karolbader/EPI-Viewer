@@ -3,17 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>EPI Viewer</title>
+    <title>Civitas Analytica EPI Rail Viewer</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <h1>EPI Viewer</h1>
-        <p class="subhead">Local-only EPI pack inspector</p>
+      <div class="brand-block">
+        <img class="brand-mark" src="./assets/civitas-mark.svg" alt="Civitas Analytica" />
+        <div>
+          <h1>Civitas Analytica | EPI Rail Viewer</h1>
+          <p class="subhead">Local-only EPI pack inspector</p>
+        </div>
       </div>
       <div class="topbar-actions">
+        <button id="export-support-pack-btn" type="button">Export Support Pack...</button>
         <button id="open-pack-btn" type="button">Open pack.zip</button>
+        <span id="demo-badge" class="demo-badge hidden" aria-hidden="true">DEMO</span>
       </div>
     </header>
 
@@ -24,18 +29,19 @@
     <section id="global-banner" class="banner hidden"></section>
 
     <nav class="tabs">
-      <button class="tab active" data-tab="overview">Overview</button>
-      <button class="tab" data-tab="claims">Claims</button>
-      <button class="tab" data-tab="drift">Drift</button>
-      <button class="tab" data-tab="decision">Decision Pack</button>
-      <button class="tab" data-tab="files">Files</button>
+      <button class="tab active" data-tab="overview"><span class="tab-label">Overview</span></button>
+      <button class="tab" data-tab="claims"><span class="tab-label">Claims</span></button>
+      <button class="tab" data-tab="drift"><span class="tab-label">Drift</span></button>
+      <button class="tab" data-tab="decision"><span class="tab-label">Decision</span></button>
+      <button class="tab" data-tab="files"><span class="tab-label">Files</span></button>
+      <button id="demo-tour-btn" class="demo-tour-btn hidden" type="button">Start tour</button>
     </nav>
 
     <main class="panels">
       <section id="panel-overview" class="panel active">
         <div class="grid grid-2">
           <article class="card">
-            <h2>Pack Summary</h2>
+            <h2 class="snapshot-digest">Snapshot Digest</h2>
             <dl class="meta">
               <dt>Pack path</dt>
               <dd id="overview-pack-path">-</dd>
@@ -72,13 +78,19 @@
 
         <article class="card">
           <h2>Quick Counts</h2>
-          <dl class="meta inline">
-            <dt>Claims</dt>
-            <dd id="quick-claims-count">0</dd>
-            <dt>Drift changes</dt>
-            <dd id="quick-drift-count">0</dd>
-            <dt>Affected claims</dt>
-            <dd id="quick-affected-claims-count">0</dd>
+          <dl class="quick-stats">
+            <div class="quick-stat">
+              <dt>Files</dt>
+              <dd id="quick-files-count">0</dd>
+            </div>
+            <div class="quick-stat">
+              <dt>Claims</dt>
+              <dd id="quick-claims-count">0</dd>
+            </div>
+            <div class="quick-stat">
+              <dt>Drift changes</dt>
+              <dd id="quick-drift-count">0</dd>
+            </div>
           </dl>
         </article>
       </section>
@@ -141,6 +153,12 @@
       <section id="panel-decision" class="panel">
         <article class="card fill-height">
           <h2>DecisionPack.html</h2>
+          <div id="decision-pdf-actions" class="decision-actions hidden">
+            <button id="decision-open-pdf-btn" type="button">Open PDF</button>
+            <button id="decision-export-pdf-btn" type="button">Export PDF...</button>
+            <button id="decision-print-pdf-btn" type="button">Print PDF</button>
+          </div>
+          <p id="decision-pdf-message" class="small"></p>
           <p id="decision-empty">DecisionPack.html is not available in this pack.</p>
           <iframe id="decision-frame" title="Decision Pack Viewer"></iframe>
         </article>
@@ -155,6 +173,12 @@
           <article class="card">
             <h2>Preview</h2>
             <p id="preview-empty">Select a file to view its content.</p>
+            <div id="preview-actions" class="preview-actions hidden">
+              <button id="preview-open-btn" type="button">Open</button>
+              <button id="preview-export-btn" type="button">Export...</button>
+              <button id="preview-print-btn" class="hidden" type="button">Print PDF</button>
+            </div>
+            <p id="preview-note" class="small hidden"></p>
             <div id="preview-wrap" class="hidden">
               <p id="preview-meta" class="small mono"></p>
               <div id="preview-html" class="markdown hidden"></div>
