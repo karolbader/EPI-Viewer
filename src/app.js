@@ -16,9 +16,26 @@
     4: "drift",
     5: "decision",
   };
+  const STANDARD_LIBRARIES = [
+    "vendorsecurity/v1",
+    "iso27001-lite/v1",
+    "dfir-lite/v1",
+    "soc_2",
+    "nist_csf",
+  ];
+  const EMPTY_ENTITLEMENTS = Object.freeze({
+    status: "missing",
+    plan: null,
+    enabledLibraries: [],
+    expiresAt: null,
+    readOnly: true,
+    sourcePath: "config/entitlements.json",
+    message: "Unlicensed: config/entitlements.json not found.",
+  });
 
   const state = {
     pack: null,
+    entitlements: { ...EMPTY_ENTITLEMENTS },
     selectedClaimId: null,
     selectedFileRelPath: null,
     activeTab: "overview",
@@ -37,6 +54,7 @@
     demoTourBtn: document.getElementById("demo-tour-btn"),
     dropZone: document.getElementById("drop-zone"),
     banner: document.getElementById("global-banner"),
+    licenseBanner: document.getElementById("license-banner"),
     tabs: Array.from(document.querySelectorAll(".tab")),
     panels: {
       overview: document.getElementById("panel-overview"),
@@ -60,6 +78,14 @@
     quickFilesCount: document.getElementById("quick-files-count"),
     quickClaimsCount: document.getElementById("quick-claims-count"),
     quickDriftCount: document.getElementById("quick-drift-count"),
+    licensePlan: document.getElementById("license-plan"),
+    licenseStatus: document.getElementById("license-status"),
+    licenseExpires: document.getElementById("license-expires"),
+    licenseMode: document.getElementById("license-mode"),
+    licenseSourcePath: document.getElementById("license-source-path"),
+    licenseReadonlyNote: document.getElementById("license-readonly-note"),
+    licenseEnabledLibraries: document.getElementById("license-enabled-libraries"),
+    licenseLibraries: document.getElementById("license-libraries"),
     claimsTableBody: document.querySelector("#claims-table tbody"),
     claimDetailEmpty: document.getElementById("claim-detail-empty"),
     claimDetail: document.getElementById("claim-detail"),
@@ -102,6 +128,74 @@
     elements.banner.textContent = message;
     elements.banner.classList.remove("hidden");
     elements.banner.classList.toggle("error", !!isError);
+  }
+
+  function setLicenseBanner(message, kind) {
+    if (!elements.licenseBanner) return;
+    if (!message) {
+      elements.licenseBanner.classList.add("hidden");
+      elements.licenseBanner.classList.remove("error");
+      elements.licenseBanner.textContent = "";
+      return;
+    }
+    elements.licenseBanner.textContent = message;
+    elements.licenseBanner.classList.remove("hidden");
+    elements.licenseBanner.classList.toggle("error", kind === "error");
+  }
+
+  function normalizeEntitlements(raw) {
+    const status = String(raw?.status || EMPTY_ENTITLEMENTS.status).toLowerCase();
+    return {
+      status:
+        status === "active" || status === "expired" || status === "invalid" || status === "missing"
+          ? status
+          : EMPTY_ENTITLEMENTS.status,
+      plan: raw?.plan || null,
+      enabledLibraries: Array.isArray(raw?.enabledLibraries)
+        ? raw.enabledLibraries.map((value) => String(value))
+        : [],
+      expiresAt: raw?.expiresAt || null,
+      readOnly: Boolean(raw?.readOnly),
+      sourcePath: raw?.sourcePath || EMPTY_ENTITLEMENTS.sourcePath,
+      message: raw?.message || EMPTY_ENTITLEMENTS.message,
+    };
+  }
+
+  function formatLicenseStatus(status) {
+    if (status === "active") return "Active";
+    if (status === "expired") return "Expired";
+    if (status === "invalid") return "Invalid";
+    return "Missing";
+  }
+
+  function applyLicenseStatusTone(element, status) {
+    if (!element) return;
+    element.classList.remove("status-good", "status-warn", "status-error");
+    if (status === "active") {
+      element.classList.add("status-good");
+      return;
+    }
+    if (status === "expired") {
+      element.classList.add("status-warn");
+      return;
+    }
+    element.classList.add("status-error");
+  }
+
+  function setLicenseRestrictedControls(readOnly) {
+    const controls = Array.from(
+      document.querySelectorAll("[data-license-action='enable'], [data-license-action='generate']")
+    );
+    controls.forEach((control) => {
+      if (!(control instanceof HTMLButtonElement)) return;
+      control.disabled = readOnly;
+      control.classList.toggle("license-action-disabled", readOnly);
+      if (readOnly) {
+        control.setAttribute("title", "Disabled in read-only mode.");
+      } else {
+        control.removeAttribute("title");
+      }
+    });
   }
 
   function isDemoEnabled(startupOptions) {
@@ -331,6 +425,104 @@
     element.classList.toggle("status-good", isGoodStatus(value));
   }
 
+  function appendLicenseListItem(container, { icon, title, hint, enabled }) {
+    const item = document.createElement("li");
+    item.className = `license-item ${enabled ? "enabled" : "locked"}`;
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "license-item-icon";
+    iconEl.setAttribute("aria-hidden", "true");
+    iconEl.textContent = icon;
+
+    const content = document.createElement("div");
+    const titleEl = document.createElement("div");
+    titleEl.className = "license-item-title mono";
+    titleEl.textContent = title;
+    content.appendChild(titleEl);
+
+    if (hint) {
+      const hintEl = document.createElement("div");
+      hintEl.className = "license-item-hint";
+      hintEl.textContent = hint;
+      content.appendChild(hintEl);
+    }
+
+    item.appendChild(iconEl);
+    item.appendChild(content);
+    container.appendChild(item);
+  }
+
+  function renderLicense() {
+    const license = normalizeEntitlements(state.entitlements);
+    const statusLabel = formatLicenseStatus(license.status);
+    const enabledSet = new Set(license.enabledLibraries);
+
+    elements.licensePlan.textContent = license.plan || "Unlicensed";
+    elements.licenseStatus.textContent = statusLabel;
+    applyLicenseStatusTone(elements.licenseStatus, license.status);
+    elements.licenseExpires.textContent = license.expiresAt || "No expiry";
+    elements.licenseMode.textContent =
+      license.status === "expired"
+        ? "READ-ONLY"
+        : license.status === "active"
+          ? "STANDARD"
+          : "LOCKED";
+    elements.licenseSourcePath.textContent = `Source: ${license.sourcePath}`;
+    elements.licenseReadonlyNote.classList.toggle("hidden", !license.readOnly);
+
+    elements.licenseEnabledLibraries.innerHTML = "";
+    if (license.enabledLibraries.length === 0) {
+      appendLicenseListItem(elements.licenseEnabledLibraries, {
+        icon: "🔒",
+        title: "No enabled libraries",
+        hint: "No licensed library entitlements found.",
+        enabled: false,
+      });
+    } else {
+      license.enabledLibraries.forEach((libraryId) => {
+        appendLicenseListItem(elements.licenseEnabledLibraries, {
+          icon: "✓",
+          title: libraryId,
+          hint: license.readOnly
+            ? "Enabled by plan. Read-only mode is active."
+            : "Enabled by plan.",
+          enabled: true,
+        });
+      });
+    }
+
+    elements.licenseLibraries.innerHTML = "";
+    STANDARD_LIBRARIES.forEach((libraryId) => {
+      const enabled = enabledSet.has(libraryId);
+      let hint = "Not enabled for your plan.";
+      if (enabled) {
+        hint = license.readOnly
+          ? "Enabled by plan (read-only due to expiry)."
+          : "Enabled for your plan.";
+      } else if (license.status === "missing" || license.status === "invalid") {
+        hint = "Not enabled for your plan (license inactive).";
+      }
+
+      appendLicenseListItem(elements.licenseLibraries, {
+        icon: enabled ? "✓" : "🔒",
+        title: libraryId,
+        hint,
+        enabled,
+      });
+    });
+
+    if (license.status === "active") {
+      setLicenseBanner("", "info");
+    } else if (license.status === "invalid") {
+      setLicenseBanner(license.message || "License invalid.", "error");
+    } else if (license.status === "expired") {
+      setLicenseBanner(license.message || "License expired. Viewer is in read-only mode.", "warn");
+    } else {
+      setLicenseBanner(license.message || "Unlicensed.", "warn");
+    }
+    setLicenseRestrictedControls(license.readOnly);
+  }
+
   function renderOverview() {
     const pack = state.pack;
     if (!pack) {
@@ -344,6 +536,7 @@
       elements.quickFilesCount.textContent = "0";
       elements.quickClaimsCount.textContent = "0";
       elements.quickDriftCount.textContent = "0";
+      renderLicense();
       return;
     }
 
@@ -373,6 +566,7 @@
       pack.quickCounts?.driftChangesCount ??
         (Array.isArray(pack.drift?.changes) ? pack.drift.changes.length : 0)
     );
+    renderLicense();
   }
 
   function renderClaims() {
@@ -893,6 +1087,24 @@
     };
   }
 
+  async function refreshEntitlements() {
+    if (!invoke) {
+      state.entitlements = { ...EMPTY_ENTITLEMENTS };
+      renderOverview();
+      return;
+    }
+    try {
+      const status = await invoke("get_entitlements_status");
+      state.entitlements = normalizeEntitlements(status);
+    } catch (error) {
+      state.entitlements = normalizeEntitlements({
+        status: "invalid",
+        message: `License invalid: ${String(error)}`,
+      });
+    }
+    renderOverview();
+  }
+
   async function applyStartupOptions() {
     if (!invoke) return null;
     try {
@@ -940,6 +1152,7 @@
       setBanner(TAURI_FALLBACK_BANNER, true);
       return;
     }
+    await refreshEntitlements();
     await applyStartupOptions();
   }
 

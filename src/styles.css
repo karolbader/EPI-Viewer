@@ -166,6 +166,14 @@ body {
   color: var(--error);
 }
 
+.banner-license {
+  color: var(--warn);
+}
+
+.banner-license.error {
+  color: var(--error);
+}
+
 .hidden {
   display: none !important;
 }
@@ -487,6 +495,71 @@ tr.claim-row.selected {
 .status-good {
   color: var(--accent-85);
   font-weight: 600;
+}
+
+.status-warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.status-error {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.license-subtitle {
+  margin: 16px 0 8px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.license-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.license-item {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 8px;
+  border: 1px solid var(--border-card);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  padding: 10px 12px;
+}
+
+.license-item-icon {
+  line-height: 20px;
+  text-align: center;
+}
+
+.license-item.enabled .license-item-icon {
+  color: var(--accent-85);
+}
+
+.license-item.locked .license-item-icon {
+  color: var(--warn);
+}
+
+.license-item-title {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.license-item-hint {
+  margin-top: 2px;
+  color: var(--text-70);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.license-action-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 a {

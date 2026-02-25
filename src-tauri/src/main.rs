@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod entitlements;
+
 use anyhow::{bail, Context, Result};
 use chrono::{SecondsFormat, Utc};
 use pulldown_cmark::{html as markdown_html, Options as MarkdownOptions, Parser as MarkdownParser};
@@ -221,6 +223,11 @@ fn get_startup_options() -> StartupOptions {
         }),
         demo_mode: parsed.demo_mode || env_flag_is_true("VITE_DEMO"),
     }
+}
+
+#[tauri::command]
+fn get_entitlements_status() -> entitlements::EntitlementsStatusResponse {
+    entitlements::get_entitlements_status(Utc::now())
 }
 
 #[tauri::command]
@@ -1454,6 +1461,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_startup_options,
+            get_entitlements_status,
             pick_pack_zip,
             load_pack,
             read_file_preview,

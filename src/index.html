@@ -27,6 +27,7 @@
     </section>
 
     <section id="global-banner" class="banner hidden"></section>
+    <section id="license-banner" class="banner banner-license hidden"></section>
 
     <nav class="tabs">
       <button class="tab active" data-tab="overview"><span class="tab-label">Overview</span></button>
@@ -93,6 +94,32 @@
             </div>
           </dl>
         </article>
+
+        <div class="grid grid-2">
+          <article class="card">
+            <h2>License</h2>
+            <dl class="meta">
+              <dt>Plan</dt>
+              <dd id="license-plan">-</dd>
+              <dt>Status</dt>
+              <dd id="license-status">-</dd>
+              <dt>Expires (UTC)</dt>
+              <dd id="license-expires">-</dd>
+              <dt>Mode</dt>
+              <dd id="license-mode">-</dd>
+            </dl>
+            <p id="license-source-path" class="small mono">-</p>
+            <p id="license-readonly-note" class="small hidden">Read-only mode: generation and enable actions are disabled.</p>
+            <h3 class="license-subtitle">Enabled libraries</h3>
+            <ul id="license-enabled-libraries" class="license-list"></ul>
+          </article>
+
+          <article class="card">
+            <h2>Libraries</h2>
+            <p class="small">Standard Civitas library set bundled for entitlement checks.</p>
+            <ul id="license-libraries" class="license-list"></ul>
+          </article>
+        </div>
       </section>
 
       <section id="panel-claims" class="panel">
